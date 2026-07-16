@@ -1,0 +1,106 @@
+name: Tourism Project Pipeline
+
+on:
+  push:
+    branches: [main]
+    # Don't retrigger when the pipeline commits the model back.
+    paths-ignore:
+      - "tourism_project/models/**"
+      - "mlruns/**"
+      - "README.md"
+      - ".devcontainer/**"
+  workflow_dispatch: {}
+
+jobs:
+  data-prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r tourism_project/requirements.txt
+
+      - name: Run data preparation
+        run: python tourism_project/model_building/prep.py
+
+      - name: Upload splits as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-splits
+          path: tourism_project/data/splits/
+          retention-days: 7
+
+  model-training:
+    needs: data-prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r tourism_project/requirements.txt
+
+      - name: Download splits artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: data-splits
+          path: tourism_project/data/splits/
+
+      - name: Train model
+        run: python tourism_project/model_building/train.py
+
+      - name: Upload trained model as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model
+          path: tourism_project/models/best_tourism_package_model_v1.joblib
+          retention-days: 30
+
+      - name: Upload MLflow runs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlflow-runs
+          path: mlruns/
+          retention-days: 30
+
+  commit-model:
+    needs: model-training
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download trained model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+          path: tourism_project/models/
+
+      - name: Commit and push updated model
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add tourism_project/models/best_tourism_package_model_v1.joblib
+
+          if git diff --staged --quiet; then
+            echo "Model unchanged — nothing to commit."
+            exit 0
+          fi
+
+          git commit -m "chore(model): update trained model [skip ci]
+
+          Trained by workflow run ${{ github.run_id }} on commit ${{ github.sha }}."
+          git push
